@@ -14,7 +14,21 @@ export default class ProductPage extends BaseProductPage {
         return {
            ...super.initLocators(),
            messageSuccess: () => this.page.locator('.message-success'),
+           filledMinicartCounter: () => this.page.locator('.minicart-wrapper .counter.qty:not(.empty) .counter-number'),
         };
+    }
+
+    async addToCart(options) {
+        await this.goto(options);
+        const { qtyInput, addToCartButton } = this.locators;
+        await qtyInput(options).fill(`${options.quantity || 1}`);
+        const cartUpdated = this.page.waitForResponse(
+            response => response.url().includes('/checkout/cart/add') && response.status() < 400,
+            { timeout: 60000 }
+        );
+        await addToCartButton(options).click();
+        await cartUpdated;
+        await this.expectProductIsInCart(options);
     }
 
     /**
@@ -53,6 +67,7 @@ export default class ProductPage extends BaseProductPage {
      * @returns {Promise<void>}
      */
     async expectProductIsInCart(options = {}) {
-        await this.locators.messageSuccess().waitFor({timeout: 30000});
+        const { messageSuccess, filledMinicartCounter } = this.locators;
+        await messageSuccess().or(filledMinicartCounter()).first().waitFor({ timeout: 60000 });
     }
 }

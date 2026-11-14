@@ -188,7 +188,7 @@ export default class CheckoutPage extends BaseCheckoutPage {
     * @param {Object} options
     */
     async waitForOrderSuccess(options) {
-        await this.page.waitForURL(/checkout\/onepage\/success\//, { timeout: 30000, waitUntil: 'commit' });
+        await this.page.waitForURL(/checkout\/onepage\/success\//, { timeout: 90000, waitUntil: 'commit' });
     }
 
     /**

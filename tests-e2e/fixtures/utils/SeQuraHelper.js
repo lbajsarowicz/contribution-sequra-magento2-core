@@ -36,6 +36,24 @@ export default class SeQuraHelper extends BaseSeQuraHelper {
         return `${this.baseURL}/rest/V1/sequrahelper/webhook/?sq-webhook=${webhook}${this.getWebhookUrlArgs(args)}`;
     }
 
+    async executeWebhook(options = {}) {
+        const { webhook, args = [], returnResponse = false } = options;
+        if (!this.webhooks[webhook]) {
+            throw new Error(`Webhook "${webhook}" not found`);
+        }
+        const url = this.getWebhookUrl(options);
+        try {
+            const response = await this.request.post(url, { timeout: 90000 });
+            this.expect(response.status(), `Webhook "${url}" response has HTTP 200 code`).toBe(200);
+            if (returnResponse) {
+                return await response.json();
+            }
+        } catch (e) {
+            console.log(webhook, args, e);
+            throw e;
+        }
+    }
+
     async getOrderTrackings(orderNumber) {
         const [, { trackings }] = await this.executeWebhook({
             webhook: this.webhooks.get_order_trackings,
