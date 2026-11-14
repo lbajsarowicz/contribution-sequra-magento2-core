@@ -9,6 +9,7 @@ use Magento\Framework\Event\Observer;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
 use Magento\Sales\Model\Order;
+use Magento\Sales\Model\Order\Config as OrderConfig;
 use Magento\Sales\Model\Order\Payment;
 use Magento\Sales\Model\ResourceModel\Order as OrderResource;
 use PHPUnit\Framework\MockObject\MockObject;
@@ -76,9 +77,9 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testSendsTheCancellationToSequra(): void
     {
-        $observer = $this->observer(Order::STATE_PENDING_PAYMENT);
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
 
-        $this->connection->expects($this->once())->method('fetchOne');
+        $this->connection->expects($this->once())->method('fetchRow');
         $this->orderUpdater->expects($this->once())
             ->method('update')
             ->with('1', $this->callback(static function (OrderUpdateRequest $request) {
@@ -101,7 +102,7 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testRefusesToCancelAnOrderInPaymentReview(): void
     {
-        $observer = $this->observer(Order::STATE_PAYMENT_REVIEW);
+        $observer = $this->observer(Order::STATE_NEW, Order::STATE_PAYMENT_REVIEW);
 
         $this->orderUpdater->expects($this->never())->method('update');
 
@@ -117,11 +118,126 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testIgnoresAnOrderThatWasAlreadyCancelled(): void
     {
-        $observer = $this->observer(Order::STATE_CANCELED);
+        $observer = $this->observer(Order::STATE_CANCELED, Order::STATE_CANCELED);
 
         $this->orderUpdater->expects($this->never())->method('update');
 
         $observer->execute($this->event($this->cancelledOrder()));
+    }
+
+    /**
+     * The status Magento gives a cancelled order is the default status of the canceled state, which the merchant
+     * can replace with a custom one. The cancellation still has to reach SeQura.
+     *
+     * @return void
+     */
+    public function testSendsTheCancellationWhenTheCanceledStateHasACustomStatus(): void
+    {
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
+
+        $this->orderUpdater->expects($this->once())
+            ->method('update')
+            ->willReturn($this->createStub(SeQuraOrder::class));
+
+        $observer->execute($this->event($this->order(Order::STATE_CANCELED, 'canceled_by_merchant')));
+    }
+
+    /**
+     * Saving again an order that was cancelled with a custom status does not send it again.
+     *
+     * @return void
+     */
+    public function testIgnoresAnOrderThatWasAlreadyCancelledWithACustomStatus(): void
+    {
+        $observer = $this->observer(Order::STATE_CANCELED, 'canceled_by_merchant');
+
+        $this->orderUpdater->expects($this->never())->method('update');
+
+        $observer->execute($this->event($this->order(Order::STATE_CANCELED, 'canceled_by_merchant')));
+    }
+
+    /**
+     * An order whose status is set to canceled while the state is not changed, as some imports and REST clients do,
+     * is cancelled in SeQura too.
+     *
+     * @return void
+     */
+    public function testSendsTheCancellationWhenOnlyTheStatusIsSetToCanceled(): void
+    {
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
+
+        $this->orderUpdater->expects($this->once())
+            ->method('update')
+            ->willReturn($this->createStub(SeQuraOrder::class));
+
+        $observer->execute($this->event($this->order(Order::STATE_PENDING_PAYMENT, Order::STATE_CANCELED)));
+    }
+
+    /**
+     * An order already stored in the canceled state is not sent again, whatever its stored status.
+     *
+     * @return void
+     */
+    public function testIgnoresAnOrderStoredInTheCanceledStateWithAnotherStatus(): void
+    {
+        $observer = $this->observer(Order::STATE_CANCELED, 'pending');
+
+        $this->orderUpdater->expects($this->never())->method('update');
+
+        $observer->execute($this->event($this->cancelledOrder()));
+    }
+
+    /**
+     * An order already stored with a status of the canceled state is not sent again, whatever its stored state.
+     *
+     * @return void
+     */
+    public function testIgnoresAnOrderStoredWithACanceledStatusInAnotherState(): void
+    {
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, 'canceled_by_merchant');
+
+        $this->orderUpdater->expects($this->never())->method('update');
+
+        $observer->execute($this->event($this->cancelledOrder()));
+    }
+
+    /**
+     * Saving an order of another payment method, even a cancelled one, reads neither the canceled statuses nor the
+     * stored order.
+     *
+     * @return void
+     */
+    public function testDoesNotLookUpStatusesOrTheStoredOrderForOtherPaymentMethods(): void
+    {
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
+        $orderConfig = $this->createMock(OrderConfig::class);
+
+        $orderConfig->expects($this->never())->method('getStateStatuses');
+        $this->connection->expects($this->never())->method('fetchRow');
+        $this->orderUpdater->expects($this->never())->method('update');
+
+        $observer->execute(
+            $this->event($this->order(Order::STATE_CANCELED, 'canceled_by_merchant', 'checkmo', $orderConfig))
+        );
+    }
+
+    /**
+     * Saving a SeQura order that is not being cancelled reads neither the canceled statuses nor the stored order.
+     *
+     * @return void
+     */
+    public function testDoesNotLookUpStatusesOrTheStoredOrderForAnOrderThatIsNotCancelled(): void
+    {
+        $observer = $this->observer(Order::STATE_NEW, 'pending');
+        $orderConfig = $this->createMock(OrderConfig::class);
+
+        $orderConfig->expects($this->never())->method('getStateStatuses');
+        $this->connection->expects($this->never())->method('fetchRow');
+        $this->orderUpdater->expects($this->never())->method('update');
+
+        $order = $this->order(Order::STATE_PROCESSING, Order::STATE_PROCESSING, ConfigProvider::CODE, $orderConfig);
+
+        $observer->execute($this->event($order));
     }
 
     /**
@@ -131,9 +247,9 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testIgnoresOtherPaymentMethods(): void
     {
-        $observer = $this->observer(Order::STATE_PENDING_PAYMENT);
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
 
-        $this->connection->expects($this->never())->method('fetchOne');
+        $this->connection->expects($this->never())->method('fetchRow');
         $this->orderUpdater->expects($this->never())->method('update');
 
         $observer->execute($this->event($this->cancelledOrder('checkmo')));
@@ -146,10 +262,10 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testSendsNothingWhileProcessingAWebhook(): void
     {
-        $observer = $this->observer(Order::STATE_PENDING_PAYMENT);
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
         $this->setStatic(WebhookController::class, 'isWebhookProcessing', true);
 
-        $this->connection->expects($this->never())->method('fetchOne');
+        $this->connection->expects($this->never())->method('fetchRow');
         $this->orderUpdater->expects($this->never())->method('update');
 
         $observer->execute($this->event($this->cancelledOrder()));
@@ -162,7 +278,7 @@ class OrderCancellationObserverTest extends TestCase
      */
     public function testLogsAndKeepsTheCancellationWhenSequraFails(): void
     {
-        $observer = $this->observer(Order::STATE_PENDING_PAYMENT);
+        $observer = $this->observer(Order::STATE_PENDING_PAYMENT, Order::STATE_PENDING_PAYMENT);
 
         $this->orderUpdater->method('update')->willThrowException(new Exception('timeout'));
 
@@ -172,11 +288,12 @@ class OrderCancellationObserverTest extends TestCase
     }
 
     /**
+     * @param string $previousState State stored in sales_order before this save.
      * @param string $previousStatus Status stored in sales_order before this save.
      *
      * @return OrderCancellationObserver
      */
-    private function observer(string $previousStatus): OrderCancellationObserver
+    private function observer(string $previousState, string $previousStatus): OrderCancellationObserver
     {
         $select = $this->createMock(Select::class);
         $select->method('from')->willReturnSelf();
@@ -184,7 +301,7 @@ class OrderCancellationObserverTest extends TestCase
 
         $this->connection = $this->createMock(AdapterInterface::class);
         $this->connection->method('select')->willReturn($select);
-        $this->connection->method('fetchOne')->willReturn($previousStatus);
+        $this->connection->method('fetchRow')->willReturn(['state' => $previousState, 'status' => $previousStatus]);
 
         $resource = $this->createMock(OrderResource::class);
         $resource->method('getConnection')->willReturn($this->connection);
@@ -204,14 +321,47 @@ class OrderCancellationObserverTest extends TestCase
      */
     private function cancelledOrder(string $paymentMethod = ConfigProvider::CODE): Order
     {
+        return $this->order(Order::STATE_CANCELED, Order::STATE_CANCELED, $paymentMethod);
+    }
+
+    /**
+     * @param string $state
+     * @param string $status
+     * @param string $paymentMethod
+     * @param OrderConfig|null $orderConfig
+     *
+     * @return MockObject&Order
+     */
+    private function order(
+        string $state,
+        string $status,
+        string $paymentMethod = ConfigProvider::CODE,
+        ?OrderConfig $orderConfig = null
+    ): Order {
         $payment = $this->createMock(Payment::class);
         $payment->method('getMethod')->willReturn($paymentMethod);
 
+        if ($orderConfig === null) {
+            $orderConfig = $this->createStub(OrderConfig::class);
+            $orderConfig->method('getStateStatuses')->willReturn([Order::STATE_CANCELED, 'canceled_by_merchant']);
+        }
+
         $order = $this->getMockBuilder(Order::class)
             ->disableOriginalConstructor()
-            ->onlyMethods(['getStatus', 'getId', 'getPayment', 'getStoreId', 'getIncrementId', 'getOrderCurrencyCode'])
+            ->onlyMethods([
+                'getState',
+                'getStatus',
+                'getConfig',
+                'getId',
+                'getPayment',
+                'getStoreId',
+                'getIncrementId',
+                'getOrderCurrencyCode'
+            ])
             ->getMock();
-        $order->method('getStatus')->willReturn(Order::STATE_CANCELED);
+        $order->method('getState')->willReturn($state);
+        $order->method('getStatus')->willReturn($status);
+        $order->method('getConfig')->willReturn($orderConfig);
         $order->method('getId')->willReturn('42');
         $order->method('getPayment')->willReturn($payment);
         $order->method('getStoreId')->willReturn(1);

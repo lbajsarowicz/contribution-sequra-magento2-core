@@ -57,19 +57,19 @@ class OrderCancellationObserver implements ObserverInterface
     {
         $orderData = $observer->getData('order');
         if (WebhookController::isWebhookProcessing() || ! $orderData instanceof Order ||
-            $orderData->getStatus() !== Order::STATE_CANCELED ||
+            ($orderData->getState() !== Order::STATE_CANCELED && $orderData->getStatus() !== Order::STATE_CANCELED) ||
             !$orderData->getPayment() ||
             $orderData->getPayment()->getMethod() !== ConfigProvider::CODE) {
             return;
         }
 
-        $previousStatus = $this->getPreviousStatus($orderData);
-        if ($previousStatus === Order::STATE_CANCELED) {
+        $previous = $this->getPreviousStateAndStatus($orderData);
+        if ($this->isCanceled($orderData, $previous['state'], $previous['status'])) {
             return;
         }
 
         try {
-            $this->handleCancellation($orderData, $previousStatus);
+            $this->handleCancellation($orderData, $previous['status']);
         } catch (Exception $e) {
             $this->handleCancellationError($e);
         }
@@ -102,34 +102,57 @@ class OrderCancellationObserver implements ObserverInterface
     }
 
     /**
-     * Returns the status stored for the order before this save.
+     * Checks whether the order is in the canceled state or has one of the statuses assigned to that state.
      *
-     * Reads it from the database instead of the original data: orders saved through the REST API have no original
+     * @param Order $orderData
+     * @param string|null $state
+     * @param string|null $status
+     *
+     * @return bool
+     */
+    private function isCanceled(Order $orderData, ?string $state, ?string $status): bool
+    {
+        return $state === Order::STATE_CANCELED || $status === Order::STATE_CANCELED ||
+            in_array($status, $orderData->getConfig()->getStateStatuses(Order::STATE_CANCELED, false), true);
+    }
+
+    /**
+     * Returns the state and the status stored for the order before this save.
+     *
+     * Reads them from the database instead of the original data: orders saved through the REST API have no original
      * data, and the original data is not refreshed when the same order is saved twice in one request.
      *
      * @param Order $orderData
      *
-     * @return string|null
+     * @return array{state: string|null, status: string|null}
      */
-    private function getPreviousStatus(Order $orderData): ?string
+    private function getPreviousStateAndStatus(Order $orderData): array
     {
+        $previous = ['state' => null, 'status' => null];
         $orderId = $orderData->getId();
         if (!is_numeric($orderId)) {
-            return null;
+            return $previous;
         }
 
         $connection = $this->orderResource->getConnection();
         if (!$connection) {
-            return null;
+            return $previous;
         }
 
-        $status = $connection->fetchOne(
+        $row = $connection->fetchRow(
             $connection->select()
-                ->from($this->orderResource->getMainTable(), ['status'])
+                ->from($this->orderResource->getMainTable(), ['state', 'status'])
                 ->where($this->orderResource->getIdFieldName() . ' = ?', (int)$orderId)
         );
 
-        return is_string($status) ? $status : null;
+        if (!is_array($row)) {
+            return $previous;
+        }
+
+        return [
+            'state' => isset($row['state']) && is_string($row['state']) ? $row['state'] : null,
+            'status' => isset($row['status']) && is_string($row['status']) ? $row['status'] : null,
+        ];
     }
 
     /**
