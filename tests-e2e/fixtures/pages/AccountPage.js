@@ -1,4 +1,5 @@
 import { AccountPage as Base } from "playwright-fixture-for-plugins";
+import { waitForSyncedFormKey } from "../utils/formKey.js";
 
 /**
  * Magento storefront customer account page.
@@ -24,6 +25,16 @@ export default class AccountPage extends Base {
     */
     loginUrl() {
         return `${this.baseURL}/customer/account/login/`;
+    }
+
+    async login(options) {
+        const { email, password } = options;
+        await this.goto();
+        await this.locators.email().fill(email);
+        await this.locators.password().fill(password);
+        await waitForSyncedFormKey(this.page);
+        await this.locators.submit().click();
+        await this.expectLoggedIn();
     }
 
     /**

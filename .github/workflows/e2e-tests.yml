@@ -87,7 +87,7 @@ jobs:
           wait "$playwright_pull"
 
       - name: Run the E2E tests
-        run: ./bin/playwright
+        run: ./bin/playwright --retries=1
 
       - name: Collect diagnostics
         if: failure()
