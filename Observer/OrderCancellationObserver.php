@@ -64,7 +64,7 @@ class OrderCancellationObserver implements ObserverInterface
         }
 
         $previous = $this->getPreviousStateAndStatus($orderData);
-        if ($this->isCanceled($orderData, $previous['state'], $previous['status'])) {
+        if ($this->wasCanceled($previous['state'], $previous['status'])) {
             return;
         }
 
@@ -102,18 +102,19 @@ class OrderCancellationObserver implements ObserverInterface
     }
 
     /**
-     * Checks whether the order is in the canceled state or has one of the statuses assigned to that state.
+     * Checks whether the order was stored as canceled before this save.
      *
-     * @param Order $orderData
+     * A status assigned to the canceled state can be assigned to other states too, so only the stored state and the
+     * literal canceled status count.
+     *
      * @param string|null $state
      * @param string|null $status
      *
      * @return bool
      */
-    private function isCanceled(Order $orderData, ?string $state, ?string $status): bool
+    private function wasCanceled(?string $state, ?string $status): bool
     {
-        return $state === Order::STATE_CANCELED || $status === Order::STATE_CANCELED ||
-            in_array($status, $orderData->getConfig()->getStateStatuses(Order::STATE_CANCELED, false), true);
+        return $state === Order::STATE_CANCELED || $status === Order::STATE_CANCELED;
     }
 
     /**
